@@ -692,11 +692,9 @@ static int parse_args(int argc, char *argv[])
 		    ++shortname;
 		if (*shortname == '#')
 		    continue;
-		for (cp = eq; cp >= shortname; --cp)
-		    if (*cp == '=')
-			continue;
-		    else if (isspace(*cp))
-			*cp = '\0';
+		*eq = '\0';
+		for (cp = eq-1; cp >= shortname && isspace(*cp); --cp)
+		    *cp = '\0';
 		for (longname = eq + 1; isspace(*longname); ++longname)
 		    continue;
 		timezone = strchr(longname, '>');
