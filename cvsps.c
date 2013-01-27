@@ -146,6 +146,7 @@ static void set_psm_initial(PatchSetMember * psm);
 static int check_rev_funk(PatchSet *, CvsFileRevision *);
 static CvsFileRevision * rev_follow_branch(CvsFileRevision *, const char *);
 static bool before_tag(CvsFileRevision * rev, const char * tag);
+static void determine_branch_ancestor(PatchSet * ps, PatchSet * head_ps);
 static void handle_collisions();
 static Branch * create_branch(const char * name);
 static Branch * lookup_branch(const char * name);
@@ -1663,6 +1664,8 @@ static void print_patch_set(PatchSet * ps)
 	   tm->tm_hour, tm->tm_min, tm->tm_sec);
     printf("Author: %s\n", ps->author);
     printf("Branch: %s\n", ps->branch);
+    if (ps->ancestor_branch)
+	printf("Ancestor branch: %s\n", ps->ancestor_branch);
     printf("Tags:");
 
     for all_patchset_tags(tagl, ps)
@@ -2044,6 +2047,18 @@ static void assign_patchset_id(PatchSet * ps)
 	/* we need to be able to fake dates for regression testing */
 	if (regression_time)
 	    ps->date = ps->psid * timestamp_fuzz_factor * 2;
+
+	if (strcmp(ps->branch, "HEAD") != 0)
+	{
+	    PatchSet * head_ps = (PatchSet*)get_hash_object(branch_heads, ps->branch);
+	    if (!head_ps)
+	    {
+		head_ps = ps;
+		put_hash_object(branch_heads, ps->branch, head_ps);
+	    }
+
+	    determine_branch_ancestor(ps, head_ps);
+	}
 
 	find_branch_points(ps);
     }
@@ -2536,6 +2551,7 @@ static PatchSet * create_patch_set(void)
 	ps->branch_add = false;
 	ps->commitid = "";
 	ps->funk_factor = 0;
+	ps->ancestor_branch = NULL;
 	CLEAR_LIST_NODE(&ps->collision_link);
     }
 
@@ -3084,6 +3100,73 @@ static CvsFileRevision * rev_follow_branch(CvsFileRevision * rev, const char * b
     }
     
     return NULL;
+}
+
+static void determine_branch_ancestor(PatchSet * ps, PatchSet * head_ps)
+{
+    struct list_head * next;
+    CvsFileRevision * rev;
+
+    /* PatchSet 1 has no ancestor */
+    if (ps->psid == 1)
+	return;
+
+    /* HEAD branch patchsets have no ancestry, but callers should know that */
+    if (strcmp(ps->branch, "HEAD") == 0)
+    {
+	debug(DEBUG_APPWARN, "WARNING: no branch ancestry for HEAD");
+	return;
+    }
+
+    for (next = ps->members.next; next != &ps->members; next = next->next)
+    {
+	PatchSetMember * psm = list_entry(next, PatchSetMember, link);
+	rev = psm->pre_rev;
+	int d1, d2;
+
+	/* the reason this is at all complicated has to do with a
+	 * branch off of a branch.  it is possible (and indeed
+	 * likely) that some file would not have been modified
+	 * from the initial branch point to the branch-off-branch
+	 * point, and therefore the branch-off-branch point is
+	 * really branch-off-HEAD for that specific member (file).
+	 * in that case, rev->branch will say HEAD but we want
+	 * to know the symbolic name of the first branch
+	 * so we continue to look member after member until we find
+	 * the 'deepest' branching.  deepest can actually be determined
+	 * by considering the revision currently indicated by
+	 * ps->ancestor_branch (by symbolic lookup) and rev->rev. the
+	 * one with more dots wins
+	 *
+	 * also, the first commit in which a branch-off-branch is
+	 * mentioned may ONLY modify files never committed since
+	 * original branch-off-HEAD was created, so we have to keep
+	 * checking, ps after ps to be sure to get the deepest ancestor
+	 *
+	 * note: rev is the pre-commit revision, not the post-commit
+	 */
+	if (!head_ps->ancestor_branch)
+	    d1 = -1;
+	else if (strcmp(ps->branch, rev->branch) == 0)
+	    continue;
+	else if (strcmp(head_ps->ancestor_branch, "HEAD") == 0)
+	    d1 = 1;
+	else {
+	    /* branch_rev may not exist if the file was added on this branch for example */
+	    const char * branch_rev = (char *)get_hash_object(rev->file->branches_sym, head_ps->ancestor_branch);
+	    d1 = branch_rev ? count_dots(branch_rev) : 1;
+	}
+
+	/* HACK: we sometimes pretend to derive from the import branch.
+	 * just don't do that.  this is the easiest way to prevent...
+	 */
+	d2 = (strcmp(rev->rev, "1.1.1.1") == 0) ? 0 : count_dots(rev->rev);
+
+	if (d2 > d1)
+	    head_ps->ancestor_branch = rev->branch;
+
+ 	//printf("-----> %d ancestry %s %s %s\n", ps->psid, ps->branch, head_ps->ancestor_branch, rev->file->filename);
+    }
 }
 
 static void handle_collisions()
